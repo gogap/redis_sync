@@ -172,15 +172,23 @@ func cmdPush(c *cli.Context) {
 		if datafileDir == "." {
 			//SET
 			for k, v := range dataKV {
-				strVal := fmt.Sprintf("%v", v)
-				pushCache = append(pushCache, PushData{Key: k, Field: "", Value: strVal})
+				if strV, e := serializeObject(v); e != nil {
+					err = ERR_COULD_NOT_CONV_VAL_TO_STRING.New(errors.Params{"key": k, "err": e})
+					return
+				} else {
+					pushCache = append(pushCache, PushData{Key: k, Field: "", Value: strV})
+				}
 
 			}
 		} else {
 			//HSET
 			for k, v := range dataKV {
-				strVal := fmt.Sprintf("%v", v)
-				pushCache = append(pushCache, PushData{Key: datafileDir, Field: k, Value: strVal})
+				if strV, e := serializeObject(v); e != nil {
+					err = ERR_COULD_NOT_CONV_VAL_TO_STRING.New(errors.Params{"key": k, "err": e})
+					return
+				} else {
+					pushCache = append(pushCache, PushData{Key: datafileDir, Field: k, Value: strV})
+				}
 			}
 		}
 		return
@@ -192,21 +200,52 @@ func cmdPush(c *cli.Context) {
 
 	consoleReader := bufio.NewReader(os.Stdin)
 	for _, data := range pushCache {
-		if data.Field == "" {
-			if exist, e := client.Exists(data.Key); e != nil {
-				err = ERR_GET_KEY_STATUS_ERROR.New(errors.Params{"key": data.Key, "err": e})
+		exceptType := "string"
+		if data.Field != "" {
+			exceptType = "hash"
+		}
+
+		keyTypeMatchd := false
+		actualKeyType := "none"
+
+		if keyType, e := client.Type(data.Key); e != nil {
+			err = ERR_GET_REDIS_KEY_TYPE_FAILED.New(errors.Params{"key": data.Key, "err": e})
+			return
+		} else {
+			actualKeyType = keyType
+		}
+
+		keyTypeMatchd = exceptType == actualKeyType
+
+		if !keyTypeMatchd && !overWrite && actualKeyType != "none" {
+			fmt.Printf("The key: '%s' already exist, but the type is not '%s', do you want overwrite [y/N]: ", data.Key, exceptType)
+			if line, e := consoleReader.ReadByte(); e != nil {
+				err = ERR_READE_USER_INPUT_ERROR.New()
 				return
-			} else if exist {
+			} else if line == 'n' || line == 'N' {
+				continue
+			} else if line == 'y' || line == 'Y' {
+				if _, e := client.Del(data.Key); e != nil {
+					err = ERR_DELETE_REDIS_KEY_FAILED.New(errors.Params{"key": data.Key, "err": e})
+					return
+				}
+			} else {
+				continue
+			}
+		}
+
+		if keyTypeMatchd {
+			if exceptType == "string" {
 				if originV, e := client.Get(data.Key); e != nil {
 					if !errorContinue {
-						err = ERR_GET_REDIS_VALUE_ERROR.New(errors.Params{"err": e})
+						err = ERR_GET_REDIS_VALUE_ERROR.New(errors.Params{"key": data.Key, "err": e})
 						return
 					}
 				} else if string(originV) == data.Value {
-					fmt.Printf("[IGNORE-SET]\t key: '%s' already have value of '%s'\n", data.Key, data.Value)
+					fmt.Printf("[IGNORE] key: '%s' already have value of '%s'\n", data.Key, data.Value)
 					continue
 				} else if !overWrite {
-					fmt.Printf("The key: '%s' already exist, and current value is '%s', do you want overwrite it to '%s' [y/N]:", data.Key, string(originV), data.Value)
+					fmt.Printf("The key: '%s' already exist, and current value is '%s', do you want overwrite it to '%s' [y/N]: ", data.Key, string(originV), data.Value)
 					if line, e := consoleReader.ReadByte(); e != nil {
 						err = ERR_READE_USER_INPUT_ERROR.New()
 						return
@@ -214,48 +253,51 @@ func cmdPush(c *cli.Context) {
 						continue
 					}
 				}
+			} else {
+				if exist, e := client.Hexists(data.Key, data.Field); e != nil {
+					if !errorContinue {
+						err = ERR_HGET_KEY_STATUS_ERROR.New(errors.Params{"key": data.Key, "field": data.Field, "err": e})
+						return
+					}
+				} else if exist {
+					if originV, e := client.Hget(data.Key, data.Field); e != nil {
+						if !errorContinue {
+							err = ERR_HGET_REDIS_VALUE_ERROR.New(errors.Params{"key": data.Key, "field": data.Field, "err": e})
+							return
+						}
+					} else if string(originV) == data.Value {
+						fmt.Printf("[IGNORE] key: '%s', field: '%s', already have value of '%s'\n", data.Key, data.Field, data.Value)
+						continue
+					} else if !overWrite {
+						fmt.Printf("The key: '%s', field: '%s', already exist, and current value is '%s', do you want overwrite it to '%s' [y/N]: ", data.Key, data.Field, string(originV), data.Value)
+						if line, e := consoleReader.ReadByte(); e != nil {
+							err = ERR_READE_USER_INPUT_ERROR.New()
+							return
+						} else if line == 'n' || line == 'N' {
+							continue
+						}
+					}
+				}
 			}
+		}
 
+		if exceptType == "string" {
 			if e := client.Set(data.Key, []byte(data.Value)); e != nil {
 				err = ERR_SET_REDIS_DATA_ERROR.New(errors.Params{"key": data.Key, "value": data.Value, "err": e})
 				return
 			}
 
 			if viewDetails {
-				fmt.Printf("[SET]\t %s %v \n", data.Key, data.Value)
+				fmt.Printf("[SET]\t '%s' '%v' \n", data.Key, data.Value)
 			}
 		} else {
-
-			if exist, e := client.Exists(data.Key); e != nil {
-				err = ERR_GET_KEY_STATUS_ERROR.New(errors.Params{"key": data.Key, "err": e})
-				return
-			} else if exist {
-				if originV, e := client.Hget(data.Key, data.Field); e != nil {
-					if !errorContinue {
-						err = ERR_GET_REDIS_VALUE_ERROR.New(errors.Params{"err": e})
-						return
-					}
-				} else if string(originV) == data.Value {
-					fmt.Printf("[IGNORE-HSET]\t key: '%s', filed: '%s' already have value of '%s'\n", data.Key, data.Key, data.Value)
-					continue
-				} else if !overWrite {
-					fmt.Printf("The key: '%s', filed: '%s' already exist, and current value is '%s', do you want overwrite it to '%s' [y/N]:", data.Key, data.Field, string(originV), data.Value)
-					if line, e := consoleReader.ReadByte(); e != nil {
-						err = ERR_READE_USER_INPUT_ERROR.New()
-						return
-					} else if line == 'n' || line == 'N' {
-						continue
-					}
-				}
-			}
-
 			if _, e := client.Hset(data.Key, data.Field, []byte(data.Value)); e != nil {
-				err = ERR_HSET_REDIS_DATA_ERROR.New(errors.Params{"key": data.Key, "filed": data.Field, "value": data.Value, "err": e})
+				err = ERR_HSET_REDIS_DATA_ERROR.New(errors.Params{"key": data.Key, "field": data.Field, "value": data.Value, "err": e})
 				return
 			}
 
 			if viewDetails {
-				fmt.Printf("[HSET]\t %s %s %v \n", data.Key, data.Field, data.Value)
+				fmt.Printf("[HSET]\t '%s' '%s' '%v' \n", data.Key, data.Field, data.Value)
 			}
 		}
 	}

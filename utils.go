@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -19,4 +20,30 @@ func exitError(err error) {
 	}
 
 	os.Exit(1)
+}
+
+func serializeObject(obj interface{}) (str string, err error) {
+	switch val := obj.(type) {
+	case string:
+		{
+			str = val
+			return
+		}
+	case map[string]interface{}:
+		{
+			if data, e := json.Marshal(&val); e != nil {
+				err = e
+				return
+			} else {
+				str = string(data)
+				return
+			}
+		}
+	default:
+		{
+			str = fmt.Sprintf("%v", obj)
+			return
+		}
+	}
+	return
 }
