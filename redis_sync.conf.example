@@ -6,6 +6,6 @@
     "value_types": [{
         "key": "gogap",
         "field": "url",
-        "string"
+        "type": "string"
     }]
 }

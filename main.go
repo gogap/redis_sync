@@ -198,6 +198,10 @@ func cmdPush(c *cli.Context) {
 		return
 	}
 
+	total := len(pushCache)
+	ignore := 0
+	pushed := 0
+
 	consoleReader := bufio.NewReader(os.Stdin)
 	for _, data := range pushCache {
 		exceptType := "string"
@@ -242,7 +246,10 @@ func cmdPush(c *cli.Context) {
 						return
 					}
 				} else if string(originV) == data.Value {
-					fmt.Printf("[IGNORE] key: '%s' already have value of '%s'\n", data.Key, data.Value)
+					if viewDetails {
+						fmt.Printf("[IGNORE] key: '%s' already have value of '%s'\n", data.Key, data.Value)
+					}
+					ignore += 1
 					continue
 				} else if !overWrite {
 					fmt.Printf("The key: '%s' already exist, and current value is '%s', do you want overwrite it to '%s' [y/N]: ", data.Key, string(originV), data.Value)
@@ -250,6 +257,10 @@ func cmdPush(c *cli.Context) {
 						err = ERR_READE_USER_INPUT_ERROR.New()
 						return
 					} else if line == 'n' || line == 'N' {
+						continue
+					} else if line == 'y' || line == 'Y' {
+
+					} else {
 						continue
 					}
 				}
@@ -266,7 +277,10 @@ func cmdPush(c *cli.Context) {
 							return
 						}
 					} else if string(originV) == data.Value {
-						fmt.Printf("[IGNORE] key: '%s', field: '%s', already have value of '%s'\n", data.Key, data.Field, data.Value)
+						if viewDetails {
+							fmt.Printf("[IGNORE] key: '%s', field: '%s', already have value of '%s'\n", data.Key, data.Field, data.Value)
+						}
+						ignore += 1
 						continue
 					} else if !overWrite {
 						fmt.Printf("The key: '%s', field: '%s', already exist, and current value is '%s', do you want overwrite it to '%s' [y/N]: ", data.Key, data.Field, string(originV), data.Value)
@@ -274,6 +288,10 @@ func cmdPush(c *cli.Context) {
 							err = ERR_READE_USER_INPUT_ERROR.New()
 							return
 						} else if line == 'n' || line == 'N' {
+							continue
+						} else if line == 'y' || line == 'Y' {
+
+						} else {
 							continue
 						}
 					}
@@ -287,6 +305,7 @@ func cmdPush(c *cli.Context) {
 				return
 			}
 
+			pushed += 1
 			if viewDetails {
 				fmt.Printf("[SET]\t '%s' '%v' \n", data.Key, data.Value)
 			}
@@ -296,11 +315,13 @@ func cmdPush(c *cli.Context) {
 				return
 			}
 
+			pushed += 1
 			if viewDetails {
 				fmt.Printf("[HSET]\t '%s' '%s' '%v' \n", data.Key, data.Field, data.Value)
 			}
 		}
 	}
+	fmt.Printf("ignored: %d, pushed: %d, total: %d\n", ignore, pushed, total)
 }
 
 func cmdCommit(c *cli.Context) {
