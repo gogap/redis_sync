@@ -7,11 +7,14 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/codegangsta/cli"
 	"github.com/gogap/errors"
 	"github.com/hoisie/redis"
+	"github.com/nu7hatch/gouuid"
 )
 
 type PushData struct {
@@ -19,6 +22,10 @@ type PushData struct {
 	Field string
 	Value string
 }
+
+const (
+	_REDIS_SYNC_TOKEN_KEY = "__redis_sync_token"
+)
 
 var (
 	viewDetails = false
@@ -39,7 +46,6 @@ func main() {
 	}
 
 	app.Run(os.Args)
-
 }
 
 func cmdStatus(c *cli.Context) {
@@ -99,12 +105,12 @@ func cmdPush(c *cli.Context) {
 		}
 	}()
 
+	viewDetails = c.Bool("v")
+
 	if !checkIsSyncDir() {
 		err = ERR_THE_CWD_IS_NOT_SYNC_DIR.New()
 		return
 	}
-
-	viewDetails = c.Bool("v")
 
 	configFile := c.String("config")
 
@@ -115,11 +121,25 @@ func cmdPush(c *cli.Context) {
 	errorContinue := c.Bool("contine")
 	overWrite := c.Bool("overwrite")
 
-	client := redis.Client{
-		Addr:        conf.Redis.Address,
-		Db:          conf.Redis.Db,
-		Password:    conf.Redis.Auth,
-		MaxPoolSize: 3,
+	redisToken := ""
+	redisTokenExist := false
+
+	token := c.String("token")
+	if token == "" {
+		token = getLocalSyncToken()
+	}
+
+	if redisToken, redisTokenExist, err = getRedisSyncToken(); err != nil {
+		return
+	}
+
+	if redisTokenExist {
+		if redisToken != token {
+			err = ERR_SYNC_TOKEN_NOT_MATCH.New()
+			return
+		}
+	} else if err = pushSyncToken(token); err != nil {
+		return
 	}
 
 	workDir := ""
@@ -172,6 +192,22 @@ func cmdPush(c *cli.Context) {
 		if datafileDir == "." {
 			//SET
 			for k, v := range dataKV {
+
+				dockeyValType, keyValTypeExist := conf.KeyType(k)
+				if keyValTypeExist {
+					dataValType := getValType(v)
+					if dataValType != dockeyValType {
+						err = ERR_KEY_VAL_TYPE_NOT_MATCH_TO_CONF.New(
+							errors.Params{
+								"key":   k,
+								"eType": dataValType,
+								"type":  dockeyValType,
+							},
+						)
+						return
+					}
+				}
+
 				if strV, e := serializeObject(v); e != nil {
 					err = ERR_COULD_NOT_CONV_VAL_TO_STRING.New(errors.Params{"key": k, "err": e})
 					return
@@ -183,6 +219,23 @@ func cmdPush(c *cli.Context) {
 		} else {
 			//HSET
 			for k, v := range dataKV {
+
+				dockeyValType, keyValTypeExist := conf.HKeyType(datafileDir, k)
+				if keyValTypeExist {
+					dataValType := getValType(v)
+					if dataValType != dockeyValType {
+						err = ERR_HKEY_VAL_TYPE_NOT_MATCH_TO_CONF.New(
+							errors.Params{
+								"key":   datafileDir,
+								"field": k,
+								"eType": dataValType,
+								"type":  dockeyValType,
+							},
+						)
+						return
+					}
+				}
+
 				if strV, e := serializeObject(v); e != nil {
 					err = ERR_COULD_NOT_CONV_VAL_TO_STRING.New(errors.Params{"key": k, "err": e})
 					return
@@ -201,6 +254,13 @@ func cmdPush(c *cli.Context) {
 	total := len(pushCache)
 	ignore := 0
 	pushed := 0
+
+	client := redis.Client{
+		Addr:        conf.Redis.Address,
+		Db:          conf.Redis.Db,
+		Password:    conf.Redis.Auth,
+		MaxPoolSize: 3,
+	}
 
 	consoleReader := bufio.NewReader(os.Stdin)
 	for _, data := range pushCache {
@@ -224,7 +284,7 @@ func cmdPush(c *cli.Context) {
 		if !keyTypeMatchd && !overWrite && actualKeyType != "none" {
 			fmt.Printf("The key: '%s' already exist, but the type is not '%s', do you want overwrite [y/N]: ", data.Key, exceptType)
 			if line, e := consoleReader.ReadByte(); e != nil {
-				err = ERR_READE_USER_INPUT_ERROR.New()
+				err = ERR_READ_USER_INPUT_ERROR.New()
 				return
 			} else if line == 'n' || line == 'N' {
 				continue
@@ -254,7 +314,7 @@ func cmdPush(c *cli.Context) {
 				} else if !overWrite {
 					fmt.Printf("The key: '%s' already exist, and current value is '%s', do you want overwrite it to '%s' [y/N]: ", data.Key, string(originV), data.Value)
 					if line, e := consoleReader.ReadByte(); e != nil {
-						err = ERR_READE_USER_INPUT_ERROR.New()
+						err = ERR_READ_USER_INPUT_ERROR.New()
 						return
 					} else if line == 'n' || line == 'N' {
 						continue
@@ -285,7 +345,7 @@ func cmdPush(c *cli.Context) {
 					} else if !overWrite {
 						fmt.Printf("The key: '%s', field: '%s', already exist, and current value is '%s', do you want overwrite it to '%s' [y/N]: ", data.Key, data.Field, string(originV), data.Value)
 						if line, e := consoleReader.ReadByte(); e != nil {
-							err = ERR_READE_USER_INPUT_ERROR.New()
+							err = ERR_READ_USER_INPUT_ERROR.New()
 							return
 						} else if line == 'n' || line == 'N' {
 							continue
@@ -333,6 +393,8 @@ func cmdCommit(c *cli.Context) {
 		}
 	}()
 
+	viewDetails = c.Bool("v")
+
 	if !checkIsSyncDir() {
 		err = ERR_THE_CWD_IS_NOT_SYNC_DIR.New()
 		return
@@ -366,11 +428,24 @@ func cmdCommit(c *cli.Context) {
 func cmdPull(c *cli.Context) {
 	var err error
 
+	repo := GitRepo{}
+
+	isStashed := false
+
 	defer func() {
 		if err != nil {
+			if isStashed {
+				repo.StashPop()
+			}
 			exitError(err)
+		} else {
+			if isStashed {
+				repo.StashDrop()
+			}
 		}
 	}()
+
+	viewDetails = c.Bool("v")
 
 	if !checkIsSyncDir() {
 		err = ERR_THE_CWD_IS_NOT_SYNC_DIR.New()
@@ -378,17 +453,104 @@ func cmdPull(c *cli.Context) {
 	}
 
 	configFile := c.String("config")
+	token := c.String("token")
+
+	if token == "" {
+		token = getLocalSyncToken()
+	}
 
 	if err = initalConfig(configFile); err != nil {
 		return
 	}
 
-	// client := redis.Client{
-	// 	Addr:        conf.Redis.Address,
-	// 	Db:          conf.Redis.Db,
-	// 	Password:    conf.Redis.Auth,
-	// 	MaxPoolSize: 3,
-	// }
+	redisToken := ""
+	redisTokenExist := false
+
+	if redisToken, redisTokenExist, err = getRedisSyncToken(); err != nil {
+		return
+	}
+
+	if redisTokenExist {
+		if redisToken != token {
+			err = ERR_SYNC_TOKEN_NOT_MATCH.New()
+			return
+		}
+	} else {
+		if err = initSyncTokenOnNotExist(redisToken); err != nil {
+			return
+		}
+	}
+
+	var redisData, localData map[string][]PushData
+	if redisData, err = getRedisData(); err != nil {
+		return
+	}
+
+	if localData, err = getLocalData(); err != nil {
+		return
+	}
+
+	needAddToLocal := []PushData{}
+
+	for key, items := range redisData {
+		if _, exist := localData[key]; !exist {
+			needAddToLocal = append(needAddToLocal, items...)
+		}
+	}
+
+	added := len(needAddToLocal)
+
+	needDelToLocal := []PushData{}
+
+	for key, items := range localData {
+		if _, exist := redisData[key]; !exist {
+			needDelToLocal = append(needDelToLocal, items...)
+		}
+	}
+
+	deleted := len(needDelToLocal)
+
+	valueChanged := []PushData{}
+
+	for key, redisVals := range redisData {
+		if vals, exist := localData[key]; exist {
+			for _, redisItem := range redisVals {
+				for _, localItem := range vals {
+					if redisItem.Key == localItem.Key &&
+						redisItem.Field == localItem.Field &&
+						redisItem.Value != localItem.Value {
+						valueChanged = append(valueChanged, redisItem)
+					}
+				}
+			}
+		}
+	}
+
+	updated := len(valueChanged)
+
+	if !repo.IsClean() {
+		if e := repo.StashSaveAll(); e != nil {
+			err = ERR_STASH_CURRENT_DIR_FAILED.New(errors.Params{"err": e})
+			return
+		}
+		isStashed = true
+
+		repo.StashApply()
+	}
+
+	if err = addDataToLocal(needAddToLocal); err != nil {
+		return
+	}
+
+	if err = removeLocalData(needDelToLocal); err != nil {
+		return
+	}
+
+	if err = updateLocalData(valueChanged); err != nil {
+		return
+	}
+
+	fmt.Printf("update: %d, delete: %d, add: %d\n", updated, deleted, added)
 }
 
 func cmdInit(c *cli.Context) {
@@ -406,7 +568,7 @@ func cmdInit(c *cli.Context) {
 		return
 	}
 
-	signfile := cwd + "/.redis_sync"
+	signDir := cwd + "/.redis_sync"
 
 	syncConf := syncConfig{
 		Redis: redisConfig{
@@ -422,13 +584,25 @@ func cmdInit(c *cli.Context) {
 			},
 			valueType{
 				Key:  "KEY",
-				Type: "int32",
+				Type: "int",
 			},
 		},
 	}
 
-	if e := os.Mkdir(signfile, 0644); e != nil {
+	if e := os.Mkdir(signDir, 0766); e != nil {
 		err = ERR_WRITE_INIT_CONF_ERROR.New(errors.Params{"err": e})
+		return
+	}
+
+	token := c.String("token")
+
+	if token == "" {
+		tokenUUID, _ := uuid.NewV4()
+		token = strings.Replace(tokenUUID.String(), "-", "", -1)
+	}
+
+	if e := ioutil.WriteFile(signDir+"/token", []byte(token), 0644); e != nil {
+		err = ERR_WRITE_SYNC_TOKEN_FAILED.New(errors.Params{"err": e})
 		return
 	}
 
@@ -461,11 +635,483 @@ func cmdInit(c *cli.Context) {
 	}
 }
 
+func initSyncTokenOnNotExist(token string) (err error) {
+	if _, e := os.Stat(".redis_sync/token"); e != nil {
+		if os.IsNotExist(e) {
+			if e := ioutil.WriteFile(".redis_sync/token", []byte(token), 0644); e != nil {
+				err = ERR_WRITE_SYNC_TOKEN_FAILED.New(errors.Params{"err": e})
+				return
+			}
+		}
+	}
+	return
+}
+
+func getLocalSyncToken() string {
+	tk, _ := ioutil.ReadFile(".redis_sync/token")
+	return string(tk)
+}
+
+func getRedisSyncToken() (token string, exist bool, err error) {
+	client := redis.Client{
+		Addr:        conf.Redis.Address,
+		Db:          conf.Redis.Db,
+		Password:    conf.Redis.Auth,
+		MaxPoolSize: 3,
+	}
+
+	if exist, err = client.Exists(_REDIS_SYNC_TOKEN_KEY); err != nil {
+		err = ERR_GET_REDIS_SYNC_TOKEN_FAILED.New(errors.Params{"err": err})
+		return
+	} else if !exist {
+		return "", false, nil
+	} else {
+		if bToken, e := client.Get(_REDIS_SYNC_TOKEN_KEY); e != nil {
+			err = ERR_GET_REDIS_SYNC_TOKEN_FAILED.New(errors.Params{"err": e})
+			return
+		} else {
+			return string(bToken), true, nil
+		}
+	}
+}
+
+func pushSyncToken(token string) (err error) {
+	client := redis.Client{
+		Addr:        conf.Redis.Address,
+		Db:          conf.Redis.Db,
+		Password:    conf.Redis.Auth,
+		MaxPoolSize: 3,
+	}
+
+	if exist, e := client.Exists(_REDIS_SYNC_TOKEN_KEY); e != nil {
+		err = ERR_GET_REDIS_SYNC_TOKEN_FAILED.New(errors.Params{"err": e})
+		return
+	} else if !exist {
+		if e := client.Set(_REDIS_SYNC_TOKEN_KEY, []byte(token)); e != nil {
+			err = ERR_SYNC_TOKEN_TO_REDIS_FAILED.New(errors.Params{"err": e})
+			return
+		}
+	} else {
+		err = ERR_REDIS_ALREADY_HAVE_TOKEN.New()
+		return
+	}
+	return
+}
+
 func checkIsSyncDir() bool {
 	if _, e := os.Stat(".redis_sync"); e != nil {
 		return false
 	}
 	return true
+}
+
+func addDataToLocal(data []PushData) (err error) {
+	for _, pushData := range data {
+		if err = setLocalDataValue(pushData); err != nil {
+			return
+		}
+	}
+	return
+}
+
+func removeLocalData(data []PushData) (err error) {
+	for _, d := range data {
+		if d.Field == "" {
+			var vals map[string]interface{}
+			if vals, err = readDataFile("."); err != nil {
+				return
+			}
+
+			delete(vals, d.Key)
+
+			if err = writeDataFile(".", vals); err != nil {
+				return
+			}
+		} else {
+			if _, e := os.Stat(d.Key); e != nil {
+				if !os.IsNotExist(e) {
+					err = ERR_GET_KEY_DIR_FAILED.New(errors.Params{"err": e})
+					return
+				}
+			} else {
+				if e := os.RemoveAll(d.Key); e != nil {
+					err = ERR_REMOVE_LOCAL_HKEY_FAILED.New(errors.Params{"err": e})
+					return
+				}
+			}
+		}
+	}
+
+	return
+}
+
+func updateLocalData(data []PushData) (err error) {
+	for _, d := range data {
+		if err = setLocalDataValue(d); err != nil {
+			return
+		}
+	}
+	return
+}
+
+func getTypedVal(keyType string, strVal string) (val interface{}, err error) {
+	switch keyType {
+	case "number":
+		{
+			if v, e := strconv.ParseFloat(strVal, 64); e != nil {
+				err = ERR_COULD_NOT_CONV_VAL_TO_NUMBER.New(errors.Params{"val": strVal, "err": e})
+				return
+			} else {
+				val = v
+			}
+			return
+		}
+	case "object":
+		{
+			if strVal == "" {
+				return
+			}
+
+			mapVal := map[string]interface{}{}
+			if e := json.Unmarshal([]byte(strVal), &mapVal); e != nil {
+				err = ERR_COULD_NOT_CONV_VAL_TO_MAP.New(errors.Params{"val": strVal, "err": e})
+				return
+			} else {
+				val = mapVal
+			}
+
+			return
+		}
+	case "array":
+		{
+			if v, e := unmarshalJsonArray(strVal); e != nil {
+				err = ERR_COULD_NOT_CONV_VAL_TO_ARRAY.New(errors.Params{"val": strVal, "err": e})
+				return
+			} else {
+				val = v
+			}
+
+			return
+		}
+	}
+	return strVal, nil
+}
+
+func getValType(v interface{}) string {
+	switch reflect.TypeOf(v).Kind() {
+	case reflect.Int,
+		reflect.Int8,
+		reflect.Int32,
+		reflect.Int64,
+		reflect.Float32,
+		reflect.Float64:
+		return "number"
+	case reflect.Map:
+		return "object"
+	case reflect.Slice, reflect.Array:
+		return "array"
+	default:
+		return "string"
+	}
+}
+
+func setLocalDataValue(data PushData) (err error) {
+	if data.Key == "" {
+		err = ERR_THE_DATA_KEY_IS_EMPTY.New()
+		return
+	}
+
+	keyType := ""
+
+	if data.Field == "" {
+		keyType, _ = conf.KeyType(data.Key)
+	} else {
+		keyType, _ = conf.HKeyType(data.Key, data.Field)
+	}
+
+	var val interface{}
+
+	if val, err = getTypedVal(keyType, data.Value); err != nil {
+		return
+	}
+
+	if data.Field == "" {
+		if err = initDataFileOnNotExist("."); err != nil {
+			return
+		}
+
+		vals := map[string]interface{}{}
+		if vals, err = readDataFile("."); err != nil {
+			return
+		}
+
+		originValType := ""
+		if originV, exist := vals[data.Key]; exist {
+			originValType = getValType(originV)
+		} else {
+			originValType = keyType
+		}
+
+		if originValType == "" {
+			vals[data.Key] = data.Value
+		} else if originValType != keyType {
+			err = ERR_REDIS_KEY_TYPE_NOT_MATCH.New(errors.Params{"originType": originValType, "exceptType": keyType, "key": data.Key})
+			return
+		} else {
+			vals[data.Key] = val
+		}
+
+		if err = writeDataFile(".", vals); err != nil {
+			return
+		}
+	} else {
+		if err = initDataFileOnNotExist(data.Key); err != nil {
+			return
+		}
+
+		vals := map[string]interface{}{}
+		if vals, err = readDataFile(data.Key); err != nil {
+			return
+		}
+
+		originValType := ""
+		if originV, exist := vals[data.Field]; exist {
+			originValType = getValType(originV)
+		} else {
+			originValType = keyType
+		}
+
+		if originValType == "" {
+			vals[data.Field] = data.Value
+		} else if originValType != keyType {
+			err = ERR_REDIS_HKEY_TYPE_NOT_MATCH.New(errors.Params{"originType": originValType, "exceptType": keyType, "key": data.Key, "field": data.Field})
+			return
+		} else {
+			vals[data.Field] = val
+		}
+
+		if err = writeDataFile(data.Key, vals); err != nil {
+			return
+		}
+	}
+
+	return
+}
+
+func initDataFileOnNotExist(dir string) (err error) {
+	if dir != "." {
+		os.MkdirAll(dir, 0766)
+	}
+
+	datafile := dir + "/data"
+	if fi, e := os.Stat(datafile); e != nil {
+		if !os.IsNotExist(e) {
+			err = ERR_READ_DATAFILE_ERROR.New(errors.Params{"fileName": datafile, "err": e})
+			return
+		} else {
+			if e := ioutil.WriteFile(datafile, []byte("{}"), 0644); e != nil {
+				err = ERR_INITAL_DATAFILE_FAILED.New(errors.Params{"fileName": datafile, "err": e})
+				return
+			}
+		}
+	} else if fi.IsDir() {
+		err = ERR_DATAFILE_COULD_NOT_BE_A_DIR.New(errors.Params{"fileName": datafile})
+		return
+	}
+	return
+}
+
+func readDataFile(dir string) (vals map[string]interface{}, err error) {
+	datafile := dir + "/data"
+
+	if data, e := ioutil.ReadFile(datafile); e != nil {
+		err = ERR_READ_DATAFILE_ERROR.New(errors.Params{"fileName": datafile, "err": e})
+		return
+	} else if e := json.Unmarshal(data, &vals); e != nil {
+		err = ERR_PARSE_DATAFILE_ERROR.New(errors.Params{"fileName": datafile, "err": e})
+		return
+	}
+
+	return
+}
+
+func writeDataFile(dir string, vals map[string]interface{}) (err error) {
+	datafile := dir + "/data"
+
+	if data, e := json.MarshalIndent(vals, "", "    "); e != nil {
+		err = ERR_SERIALIZE_DATAFILE_FAILED.New(errors.Params{"fileName": datafile, "err": e})
+		return
+	} else if e := ioutil.WriteFile(datafile, data, 0644); e != nil {
+		err = ERR_SAVE_DATAFILE_FAILED.New(errors.Params{"fileName": datafile, "err": e})
+		return
+	}
+
+	return
+}
+
+func getRedisData() (ret map[string][]PushData, err error) {
+
+	client := redis.Client{
+		Addr:        conf.Redis.Address,
+		Db:          conf.Redis.Db,
+		Password:    conf.Redis.Auth,
+		MaxPoolSize: 3,
+	}
+
+	redisData := make(map[string][]PushData)
+	if keys, e := client.Keys("*"); e != nil {
+		err = ERR_GET_REDIS_KEYS_FAILED.New(errors.Params{"err": err})
+		return
+	} else {
+		for _, key := range keys {
+			if keyType, e := client.Type(key); e != nil {
+				return
+			} else {
+				if keyType == "string" {
+					val := ""
+					if bVal, e := client.Get(key); e != nil {
+						err = ERR_GET_REDIS_VALUE_ERROR.New(errors.Params{"key": key, "err": e})
+						return
+					} else {
+						val = string(bVal)
+					}
+
+					redisData[key] = []PushData{PushData{
+						Key:   key,
+						Value: val,
+					}}
+				} else if keyType == "hash" {
+					fieldValues := map[string]string{}
+
+					if e := client.Hgetall(key, &fieldValues); e != nil {
+						err = ERR_GET_REDIS_VALUE_ERROR.New(errors.Params{"key": key, "err": e})
+						return
+					}
+
+					for field, value := range fieldValues {
+						if vals, exist := redisData[key]; exist {
+							vals = append(vals, PushData{
+								Key:   key,
+								Field: field,
+								Value: value,
+							})
+							redisData[key] = vals
+						} else {
+							vals := append([]PushData{PushData{
+								Key:   key,
+								Field: field,
+								Value: value,
+							}})
+							redisData[key] = vals
+						}
+					}
+
+				}
+			}
+		}
+	}
+
+	if _, exist := redisData[_REDIS_SYNC_TOKEN_KEY]; exist {
+		delete(redisData, _REDIS_SYNC_TOKEN_KEY)
+	}
+
+	ret = redisData
+	return
+}
+
+func getLocalData() (ret map[string][]PushData, err error) {
+	localData := make(map[string][]PushData)
+
+	workDir := ""
+
+	if workDir, err = os.Getwd(); err != nil {
+		err = ERR_GET_CWD_FAILED.New(errors.Params{"err": err})
+		return
+	}
+
+	fnWalk := func(path string, info os.FileInfo, e error) (err error) {
+
+		if !info.IsDir() {
+			return
+		} else if strings.HasPrefix(info.Name(), ".") {
+			return filepath.SkipDir
+		}
+
+		key, _ := filepath.Rel(workDir, path)
+
+		var data map[string][]PushData
+		if data, err = readLocalData(key); err != nil {
+			return
+		}
+
+		for k, v := range data {
+			if originV, exist := localData[k]; exist {
+				localData[k] = append(originV, v...)
+			} else {
+				localData[k] = v
+			}
+		}
+
+		return
+	}
+
+	if err = filepath.Walk(workDir, fnWalk); err != nil {
+		return
+	}
+
+	ret = localData
+
+	return
+}
+
+func readLocalData(key string) (ret map[string][]PushData, err error) {
+	localData := make(map[string][]PushData)
+
+	if data, e := ioutil.ReadFile(key + "/data"); e != nil {
+		if !os.IsNotExist(e) {
+			err = ERR_READ_DATAFILE_ERROR.New(errors.Params{"fileName": "data", "err": e})
+			return
+		}
+	} else {
+		keyValues := map[string]interface{}{}
+		if e := json.Unmarshal(data, &keyValues); e != nil {
+			err = ERR_PARSE_DATAFILE_ERROR.New(errors.Params{"fileName": "data", "err": e})
+			return
+		}
+
+		if key == "." {
+			for k, v := range keyValues {
+				if strV, e := serializeObject(v); e != nil {
+					err = ERR_COULD_NOT_CONV_VAL_TO_STRING.New(errors.Params{"key": k, "err": e})
+					return
+				} else {
+					localData[k] = []PushData{PushData{
+						Key:   k,
+						Value: strV,
+					}}
+				}
+			}
+		} else {
+			pData := []PushData{}
+			for k, v := range keyValues {
+				if strV, e := serializeObject(v); e != nil {
+					err = ERR_COULD_NOT_CONV_VAL_TO_STRING.New(errors.Params{"key": k, "err": e})
+					return
+				} else {
+					pData = append(pData, PushData{
+						Key:   key,
+						Field: k,
+						Value: strV,
+					})
+					localData[key] = pData
+				}
+			}
+		}
+
+	}
+
+	ret = localData
+	return
 }
 
 func initalConfig(configFile string) (err error) {

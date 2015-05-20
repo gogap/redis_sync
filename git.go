@@ -27,6 +27,26 @@ func (p *GitRepo) Add(files ...string) error {
 	return p.run("add", files...)
 }
 
+func (p *GitRepo) Clean() error {
+	return p.run("clean", "-d", "-x", "-f", "-q")
+}
+
+func (p *GitRepo) StashSaveAll() error {
+	return p.run("stash", "-a")
+}
+
+func (p *GitRepo) StashApply() error {
+	return p.run("stash", "apply")
+}
+
+func (p *GitRepo) StashPop() error {
+	return p.run("stash", "pop")
+}
+
+func (p *GitRepo) StashDrop() error {
+	return p.run("stash", "drop", "-q")
+}
+
 func (p *GitRepo) Commit(message string) error {
 	return p.run("commit", "-m", message)
 }

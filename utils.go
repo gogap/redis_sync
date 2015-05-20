@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 
 	"github.com/gogap/errors"
 )
@@ -23,15 +24,10 @@ func exitError(err error) {
 }
 
 func serializeObject(obj interface{}) (str string, err error) {
-	switch val := obj.(type) {
-	case string:
+	switch reflect.TypeOf(obj).Kind() {
+	case reflect.Map, reflect.Array, reflect.Slice:
 		{
-			str = val
-			return
-		}
-	case map[string]interface{}:
-		{
-			if data, e := json.Marshal(&val); e != nil {
+			if data, e := json.Marshal(&obj); e != nil {
 				err = e
 				return
 			} else {
@@ -42,8 +38,14 @@ func serializeObject(obj interface{}) (str string, err error) {
 	default:
 		{
 			str = fmt.Sprintf("%v", obj)
-			return
 		}
 	}
+
 	return
+}
+
+func unmarshalJsonArray(data string) ([]interface{}, error) {
+	var ret []interface{}
+	err := json.Unmarshal([]byte(data), &ret)
+	return ret, err
 }

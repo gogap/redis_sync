@@ -56,7 +56,10 @@ func (p *syncConfig) Load(fileName string) (err error) {
 				return
 			}
 
-			key := vT.Key + "-" + vT.Field
+			key := vT.Key
+			if vT.Field != "" {
+				key = key + "-" + vT.Field
+			}
 
 			if v, exist := p.mapTypes[key]; exist {
 				if v.Field == vT.Field &&
@@ -70,7 +73,7 @@ func (p *syncConfig) Load(fileName string) (err error) {
 			}
 
 			switch vT.Type {
-			case "string", "int", "int32", "int64", "float32", "float64":
+			case "string", "number", "object", "array":
 				{
 
 				}
@@ -90,11 +93,27 @@ func (p *syncConfig) Load(fileName string) (err error) {
 
 func (p *syncConfig) Serialize() (str string, err error) {
 	var data []byte
-	if data, err = json.MarshalIndent(p, " ", "  "); err != nil {
+	if data, err = json.MarshalIndent(p, "", "    "); err != nil {
 		err = ERR_SERIALIZE_CONFIG_FAILED.New(errors.Params{"err": err})
 		return
 	}
 
 	str = string(data)
 	return
+}
+
+func (p *syncConfig) KeyType(key string) (string, bool) {
+	if strType, exist := p.mapTypes[key]; exist {
+		return strType.Type, true
+	}
+
+	return "string", false
+}
+
+func (p *syncConfig) HKeyType(key, field string) (string, bool) {
+	if strType, exist := p.mapTypes[key+"-"+field]; exist {
+		return strType.Type, true
+	}
+
+	return "string", false
 }

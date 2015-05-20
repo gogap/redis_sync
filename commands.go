@@ -13,8 +13,11 @@ func commandPush(action cliAction) cli.Command {
 		Action: action,
 		Flags: []cli.Flag{
 			cli.StringFlag{
-				Name:  "Config",
+				Name:  "config",
 				Usage: "defualt will read config file of redis_conf_sync.conf",
+			}, cli.StringFlag{
+				Name:  "token, t",
+				Usage: "sync token",
 			}, cli.BoolFlag{
 				Name:  "overwrite, o",
 				Usage: "Force overwrite values while value is already exist, default: false",
@@ -38,6 +41,9 @@ func commandPull(action cliAction) cli.Command {
 			cli.StringFlag{
 				Name:  "config",
 				Usage: "defualt will read config file of redis_conf_sync.conf",
+			}, cli.StringFlag{
+				Name:  "token, t",
+				Usage: "sync token",
 			}, cli.BoolFlag{
 				Name:  "contine, c",
 				Usage: "Continue on error",
@@ -57,6 +63,12 @@ func commandInit(action cliAction) cli.Command {
 		Name:   "init",
 		Usage:  "Init current dir for sync data",
 		Action: action,
+		Flags: []cli.Flag{
+			cli.StringFlag{
+				Name:  "token, t",
+				Usage: "sync token",
+			},
+		},
 	}
 }
 
