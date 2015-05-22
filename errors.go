@@ -61,4 +61,5 @@ var (
 	ERR_REMOVE_LOCAL_HKEY_FAILED          = errors.TN(REDIS_SYNC_ERR_NS, 50, "remove local hkey failed, error: {{.err}}")
 	ERR_KEY_VAL_TYPE_NOT_MATCH_TO_CONF    = errors.TN(REDIS_SYNC_ERR_NS, 51, "key's value type not match config's value type, key: {{.key}}, value Type: {{.eType}}, config type: {{.type}}")
 	ERR_HKEY_VAL_TYPE_NOT_MATCH_TO_CONF   = errors.TN(REDIS_SYNC_ERR_NS, 52, "hkeys's value type not match config's value type, key: {{.key}}, field: {{.field}}, value Type: {{.eType}}, config type: {{.type}}")
+	ERR_COULD_NOT_CONV_VAL_TO_BOOL        = errors.TN(REDIS_SYNC_ERR_NS, 53, "could not convert value to bool, value: {{.val}}, error: {{.err}}")
 )

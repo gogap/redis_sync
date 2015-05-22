@@ -185,7 +185,7 @@ func cmdPush(c *cli.Context) {
 		dataKV := map[string]interface{}{}
 
 		if e := json.Unmarshal(data, &dataKV); e != nil {
-			err = ERR_PARSE_DATAFILE_ERROR.New(errors.Params{"fileName": datafile, "err": err})
+			err = ERR_PARSE_DATAFILE_ERROR.New(errors.Params{"fileName": datafile, "err": e})
 			return
 		}
 
@@ -793,6 +793,16 @@ func getTypedVal(keyType string, strVal string) (val interface{}, err error) {
 
 			return
 		}
+	case "bool":
+		{
+			if v, e := strconv.ParseBool(strVal); e != nil {
+				err = ERR_COULD_NOT_CONV_VAL_TO_NUMBER.New(errors.Params{"val": strVal, "err": e})
+				return
+			} else {
+				val = v
+			}
+			return
+		}
 	}
 	return strVal, nil
 }
@@ -810,6 +820,8 @@ func getValType(v interface{}) string {
 		return "object"
 	case reflect.Slice, reflect.Array:
 		return "array"
+	case reflect.Bool:
+		return "bool"
 	default:
 		return "string"
 	}

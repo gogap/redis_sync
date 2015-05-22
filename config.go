@@ -73,7 +73,7 @@ func (p *syncConfig) Load(fileName string) (err error) {
 			}
 
 			switch vT.Type {
-			case "string", "number", "object", "array":
+			case "string", "number", "object", "array", "bool":
 				{
 
 				}
